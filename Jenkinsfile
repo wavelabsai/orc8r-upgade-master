@@ -4,9 +4,15 @@ pipeline {
         buildDiscarder(logRotator(numToKeepStr: '3'))
     }
     environment {
-        PUBLISH= "${WORKSPACE}/orc8r/tools/docker/publish.sh"
-        REGISTRY= "registry.hub.docker.com/vik2595"
-        MAGMA_TAG= "master"
+        MAGMA_ROOT = "${WORKSPACE}"
+        PUBLISH= "orc8r/tools/docker/publish.sh"
+        DOCKER_ACCESS_TOKEN = credentials('VR_Docker_Token')
+        REGISTRY = "vik2595"
+        MAGMA_TAG = "master"
+        GITHUB_REPO = "magma-helm-test"
+        GITHUB_REPO_URL = "https://github.com/wavelabsai/magma-helm-test"
+        GITHUB_USERNAME = "vik2595"
+        GITHUB_ACCESS_TOKEN = credentials('VR_GH_PAT')
     }
     stages {
         stage('Clone magma repo'){
@@ -16,35 +22,63 @@ pipeline {
         }
         stage('Docker login'){
             steps {
-                script{
-                    sh 'echo 'f26e1a10-0106-4e6b-864d-4c44a058e235' | docker login --username vik2595 --password-stdin'
+                    sh 'echo "f26e1a10-0106-4e6b-864d-4c44a058e235" | docker login --username vik2595 --password-stdin'
+            }
+        }
+
+        stage('Build and publish orc8r images'){
+            steps {
+                dir ('orc8r/cloud/docker') {
+                    sh """./build.py --all --nocache --parallel"""
                 }
             }
         }
-        stage('Build orc8r images'){
+
+        stage('publish orc8r images'){
             steps {
-                script{
-                    sh '${WORKSPACE}/orc8r/cloud/docker/build.py --all'                }
+                    sh """docker image tag orc8r_controller ${env.REGISTRY}/controller:${env.MAGMA_TAG}"""         
+                    sh """docker push ${env.REGISTRY}/controller:${env.MAGMA_TAG}"""
+                    sh """docker image tag orc8r_nginx ${env.REGISTRY}/nginx:${env.MAGMA_TAG}"""         
+                    sh """docker push ${env.REGISTRY}/nginx:${env.MAGMA_TAG}"""
+                    sh """docker rmi orc8r_controller orc8r_nginx"""
             }
         }
-        stage('Publish orc8r images'){
-            steps {
-                script{
-                    sh 'for image in controller nginx ; do ${env.PUBLISH} -r ${env.REGISTRY} -i ${image} -v ${env.MAGMA_TAG} ; done'                }
-            }
-        }
+
         stage('Build NMS images'){
             steps {
-                script{
-                    sh 'cd ${WORKSPACE}/nms/app/packages/magmalte && docker-compose build magmalte'                
+                dir ('nms/packages/magmalte') {
+                    sh 'docker-compose build magmalte'
                 }
             }
         }
+
         stage('Publish NMS images'){
             steps {
-                script{
-                    sh 'COMPOSE_PROJECT_NAME=magmalte ${PUBLISH} -r ${REGISTRY} -i magmalte -v ${MAGMA_TAG}'                
-                }
+                    sh """docker image tag magmalte_magmalte ${env.REGISTRY}/magmalte:${env.MAGMA_TAG}"""         
+                    sh """docker push ${env.REGISTRY}/magmalte:${env.MAGMA_TAG}"""
+                    sh """docker rmi magmalte_magmalte"""
+            }
+        }
+        stage('Publish Helm charts'){
+            steps {
+                    sh '''#!/bin/bash
+                    mkdir -p ~/magma-charts && cd ~/magma-charts
+                    git init
+                    helm dependency update "${MAGMA_ROOT}/orc8r/cloud/helm/orc8r/"
+                    helm package "${MAGMA_ROOT}/orc8r/cloud/helm/orc8r/" && helm repo index .
+                    helm dependency update "${MAGMA_ROOT}/cwf/cloud/helm/cwf-orc8r/"
+                    helm package "${MAGMA_ROOT}/cwf/cloud/helm/cwf-orc8r/" && helm repo index .
+                    helm dependency update "${MAGMA_ROOT}/lte/cloud/helm/lte-orc8r/"
+                    helm package "${MAGMA_ROOT}/lte/cloud/helm/lte-orc8r/" && helm repo index .
+                    helm dependency update "${MAGMA_ROOT}/feg/cloud/helm/feg-orc8r/"
+                    helm package "${MAGMA_ROOT}/feg/cloud/helm/feg-orc8r/" && helm repo index .
+                    helm dependency update "${MAGMA_ROOT}/fbinternal/cloud/helm/fbinternal-orc8r/"
+                    helm package "${MAGMA_ROOT}/fbinternal/cloud/helm/fbinternal-orc8r/" && helm repo index .
+                    helm dependency update "${MAGMA_ROOT}/wifi/cloud/helm/wifi-orc8r/"
+                    helm package "${MAGMA_ROOT}/wifi/cloud/helm/wifi-orc8r/" && helm repo index .
+                    git add . && git commit -m "orc8r charts commit for version 1.5"
+                    git push https://${GITHUB_REPO}:${GITHUB_ACCESS_TOKEN}@github.com/${GITHUB_USERNAME}/${GITHUB_REPO}.git
+                '''         
             }
         }
     }
